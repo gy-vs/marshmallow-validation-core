@@ -1,0 +1,13 @@
+from marshmallow import fields, Schema
+
+
+def test_function_field_using_type_annotation():
+    def get_split_words(value: str):  # noqa
+        return value.split(';')
+
+    class MySchema(Schema):
+        friends = fields.Function(deserialize=get_split_words)
+
+    data = {'friends': 'Clark;Alfred;Robin'}
+    result = MySchema().load(data)
+    assert result == {'friends': ['Clark', 'Alfred', 'Robin']}
