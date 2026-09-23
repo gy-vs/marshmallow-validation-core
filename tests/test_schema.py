@@ -2017,7 +2017,9 @@ class TestNestedSchema:
             outer.load({'inner': [{}]})
         errors = excinfo.value.messages
         assert 'inner' in errors
-        assert '_field' in errors['inner']
+        # Non-field-targeted messages are stored under '_schema' alongside
+        # the nested field errors instead of a '_field' key
+        assert '_schema' in errors['inner']
 
     def test_dump_validation_error(self):
         class Child(object):

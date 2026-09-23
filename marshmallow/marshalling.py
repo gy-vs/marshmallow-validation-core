@@ -11,7 +11,7 @@ and from primitive types.
 from __future__ import unicode_literals
 
 from marshmallow.utils import (
-    EXCLUDE, INCLUDE, RAISE, is_collection, missing, set_value,
+    EXCLUDE, INCLUDE, RAISE, SCHEMA, is_collection, merge_errors, missing, set_value,
 )
 from marshmallow.compat import iteritems, Mapping
 from marshmallow.exceptions import ValidationError
@@ -21,11 +21,6 @@ __all__ = [
     'Marshaller',
     'Unmarshaller',
 ]
-
-# Key used for schema-level validation errors
-SCHEMA = '_schema'
-# Key used for field-level validation errors on nested fields
-FIELD = '_field'
 
 class ErrorStore(object):
 
@@ -44,14 +39,22 @@ class ErrorStore(object):
 
     def store_error(self, field_name, messages, index=None):
         self.error_field_names.append(field_name)
+        if field_name != SCHEMA or not isinstance(messages, dict):
+            # Field errors and non-dict schema errors are stored under
+            # ``field_name``. Dict messages from schema-level validators are
+            # merged into the top-level error structure instead, so that
+            # errors keyed by field name land next to field-level errors.
+            if isinstance(messages, tuple):
+                messages = list(messages)
+            elif not isinstance(messages, (list, dict)):
+                messages = [messages]
+            messages = {field_name: messages}
         errors = self.get_errors(index=index)
         # Warning: Mutation!
-        if isinstance(messages, dict):
-            errors[field_name] = messages
-        elif isinstance(errors.get(field_name), dict):
-            errors[field_name].setdefault(FIELD, []).extend(messages)
-        else:
-            errors.setdefault(field_name, []).extend(messages)
+        merged = merge_errors(errors, messages)
+        if merged is not errors:
+            errors.clear()
+            errors.update(merged)
 
     def store_validation_error(self, field_names, error, index=None):
         self.error_kwargs.update(error.kwargs)

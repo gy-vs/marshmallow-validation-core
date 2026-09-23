@@ -23,6 +23,9 @@ EXCLUDE = 'exclude'
 INCLUDE = 'include'
 RAISE = 'raise'
 
+# Key used for schema-level validation errors
+SCHEMA = '_schema'
+
 dateutil_available = False
 try:
     from dateutil import parser
@@ -68,6 +71,48 @@ def is_indexable_but_not_string(obj):
 def is_collection(obj):
     """Return True if ``obj`` is a collection type, e.g list, tuple, queryset."""
     return is_iterable_but_not_string(obj) and not isinstance(obj, Mapping)
+
+
+def merge_errors(errors1, errors2):
+    """Deeply merge two error message structures.
+
+    The format of ``errors1`` and ``errors2`` matches the ``messages``
+    attribute of :exc:`marshmallow.exceptions.ValidationError`: either a
+    list of messages, a dictionary of field names to (lists of) messages,
+    or a single message.
+
+    Lists are concatenated and dictionaries are merged recursively, so
+    messages stored under the same key are never overwritten. When a list
+    (or single message) is merged into a dictionary, it is stored under
+    the ``_schema`` key.
+    """
+    if not errors1:
+        return errors2
+    if not errors2:
+        return errors1
+    if isinstance(errors1, list):
+        if isinstance(errors2, list):
+            return errors1 + errors2
+        if isinstance(errors2, dict):
+            return dict(errors2, **{SCHEMA: merge_errors(errors1, errors2.get(SCHEMA))})
+        return errors1 + [errors2]
+    if isinstance(errors1, dict):
+        if isinstance(errors2, list):
+            return dict(errors1, **{SCHEMA: merge_errors(errors1.get(SCHEMA), errors2)})
+        if isinstance(errors2, dict):
+            errors = dict(errors1)
+            for key, val in errors2.items():
+                if key in errors:
+                    errors[key] = merge_errors(errors[key], val)
+                else:
+                    errors[key] = val
+            return errors
+        return dict(errors1, **{SCHEMA: merge_errors(errors1.get(SCHEMA), errors2)})
+    if isinstance(errors2, list):
+        return [errors1] + errors2 if errors2 else errors1
+    if isinstance(errors2, dict):
+        return dict(errors2, **{SCHEMA: merge_errors(errors1, errors2.get(SCHEMA))})
+    return [errors1, errors2]
 
 
 def is_instance_or_subclass(val, class_):
