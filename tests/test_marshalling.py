@@ -3,13 +3,53 @@
 import pytest
 
 from marshmallow import fields, EXCLUDE, INCLUDE
-from marshmallow.marshalling import Marshaller, Unmarshaller, missing
+from marshmallow.marshalling import Marshaller, Unmarshaller, missing, merge_errors
 from marshmallow.exceptions import ValidationError
 
 from tests.base import User
 
 def test_missing_is_falsy():
     assert bool(missing) is False
+
+class TestMergeErrors:
+
+    def test_merge_with_empty(self):
+        assert merge_errors(None, ['a']) == ['a']
+        assert merge_errors(['a'], None) == ['a']
+        assert merge_errors({}, {'f1': ['a']}) == {'f1': ['a']}
+        assert merge_errors({'f1': ['a']}, {}) == {'f1': ['a']}
+
+    def test_merge_lists(self):
+        assert merge_errors(['a'], ['b', 'c']) == ['a', 'b', 'c']
+
+    def test_merge_dicts(self):
+        assert merge_errors(
+            {'f1': ['a']},
+            {'f1': ['b'], 'f2': ['c']},
+        ) == {'f1': ['a', 'b'], 'f2': ['c']}
+
+    def test_merge_dicts_does_not_mutate(self):
+        errors1 = {'f1': ['a']}
+        errors2 = {'f1': ['b']}
+        merge_errors(errors1, errors2)
+        assert errors1 == {'f1': ['a']}
+        assert errors2 == {'f1': ['b']}
+
+    def test_merge_deeply_nested_dicts(self):
+        assert merge_errors(
+            {'nested': {'f1': ['a']}},
+            {'nested': {'f1': ['b'], 'f2': ['c']}},
+        ) == {'nested': {'f1': ['a', 'b'], 'f2': ['c']}}
+
+    def test_merge_list_into_dict_goes_to_schema_key(self):
+        assert merge_errors(['a'], {'f1': ['b']}) == {'f1': ['b'], '_schema': ['a']}
+        assert merge_errors({'f1': ['b']}, ['a']) == {'f1': ['b'], '_schema': ['a']}
+
+    def test_merge_scalars(self):
+        assert merge_errors('a', 'b') == ['a', 'b']
+        assert merge_errors('a', ['b']) == ['a', 'b']
+        assert merge_errors(['b'], 'a') == ['b', 'a']
+
 
 class TestMarshaller:
 
@@ -253,3 +293,50 @@ class TestUnmarshaller:
         assert 'years' not in result
 
         assert 'always_invalid' not in unmarshal.errors
+
+    def test_run_validator_stores_dict_messages_by_field_name(self, unmarshal):
+        def validator(data):
+            raise ValidationError({'foo': ['err1']})
+        unmarshal.run_validator(validator, None, None, {})
+        assert unmarshal.errors == {'foo': ['err1']}
+
+    def test_run_validator_merges_dict_messages_from_multiple_validators(self, unmarshal):
+        def validator1(data):
+            raise ValidationError({'foo': ['err1']})
+
+        def validator2(data):
+            raise ValidationError({'foo': ['err2'], 'bar': ['err3']})
+        unmarshal.run_validator(validator1, None, None, {})
+        unmarshal.run_validator(validator2, None, None, {})
+        assert unmarshal.errors == {'foo': ['err1', 'err2'], 'bar': ['err3']}
+
+    def test_run_validator_stores_string_messages_under_schema_key(self, unmarshal):
+        def validator(data):
+            raise ValidationError('schema error')
+        unmarshal.run_validator(validator, None, None, {})
+        unmarshal.run_validator(validator, None, None, {})
+        assert unmarshal.errors == {'_schema': ['schema error', 'schema error']}
+
+    def test_run_validator_stores_messages_on_given_field_names(self, unmarshal):
+        def validator(data):
+            raise ValidationError('err1', 'foo')
+        unmarshal.run_validator(validator, None, None, {})
+        assert unmarshal.errors == {'foo': ['err1']}
+
+    def test_run_validator_merges_with_field_errors(self, unmarshal):
+        unmarshal.store_error('foo', ['field error'])
+        unmarshal.store_error('foo', ['another field error'])
+
+        def validator(data):
+            raise ValidationError({'foo': ['schema error']})
+        unmarshal.run_validator(validator, None, None, {})
+        assert unmarshal.errors == {
+            'foo': ['field error', 'another field error', 'schema error'],
+        }
+
+    def test_run_validator_merges_dict_messages_per_index(self, unmarshal):
+        def validator(data):
+            raise ValidationError({'foo': ['err1']})
+        unmarshal.run_validator(validator, None, None, {}, index=0)
+        unmarshal.run_validator(validator, None, None, {}, index=1)
+        assert unmarshal.errors == {0: {'foo': ['err1']}, 1: {'foo': ['err1']}}

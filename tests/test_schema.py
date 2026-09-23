@@ -2017,7 +2017,61 @@ class TestNestedSchema:
             outer.load({'inner': [{}]})
         errors = excinfo.value.messages
         assert 'inner' in errors
-        assert '_field' in errors['inner']
+        # both the nested item errors and the field validator error are stored
+        assert errors['inner'][0] == {'req': ['Missing data for required field.']}
+        assert errors['inner']['_schema'] == ['not a chance']
+
+    def test_nested_schema_validation_errors_follow_data_hierarchy(self):
+        class AddressSchema(Schema):
+            street = fields.Str()
+            zip = fields.Int()
+
+            @validates_schema(skip_on_field_errors=False)
+            def validate_address(self, data):
+                raise ValidationError({'street': ['Invalid street.']})
+
+        class OrderSchema(Schema):
+            address = fields.Nested(AddressSchema, required=True)
+
+        errors = OrderSchema().validate(
+            {'address': {'street': 'foo', 'zip': 'notanumber'}},
+        )
+        # the schema-level error lands next to the field type error,
+        # at the same level of the data it refers to
+        assert errors == {
+            'address': {
+                'zip': ['Not a valid integer.'],
+                'street': ['Invalid street.'],
+            },
+        }
+
+    def test_load_validate_and_handle_error_see_same_messages(self):
+        handled = []
+
+        class MySchema(Schema):
+            name = fields.Str()
+            age = fields.Int()
+
+            @validates_schema(skip_on_field_errors=False)
+            def validate_schema(self, data):
+                raise ValidationError({'name': ['Invalid name.']})
+
+            def handle_error(self, error, data):
+                handled.append(error.messages)
+
+        schema = MySchema()
+        with pytest.raises(ValidationError) as excinfo:
+            schema.load({'name': 'foo', 'age': 'notanumber'})
+        load_messages = excinfo.value.messages
+        validate_messages = schema.validate({'name': 'foo', 'age': 'notanumber'})
+        expected = {
+            'age': ['Not a valid integer.'],
+            'name': ['Invalid name.'],
+        }
+        assert load_messages == expected
+        assert validate_messages == expected
+        # handle_error is called once per load attempt, with the same messages
+        assert handled == [expected, expected]
 
     def test_dump_validation_error(self):
         class Child(object):

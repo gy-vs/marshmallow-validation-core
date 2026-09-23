@@ -24,8 +24,54 @@ __all__ = [
 
 # Key used for schema-level validation errors
 SCHEMA = '_schema'
-# Key used for field-level validation errors on nested fields
-FIELD = '_field'
+
+
+def merge_errors(errors1, errors2):
+    """Deeply merge two error messages.
+
+    The format of ``errors1`` and ``errors2`` matches the ``message``
+    parameter of :exc:`marshmallow.exceptions.ValidationError`.
+    """
+    if not errors1:
+        return errors2
+    if not errors2:
+        return errors1
+    if isinstance(errors1, list):
+        if isinstance(errors2, list):
+            return errors1 + errors2
+        if isinstance(errors2, dict):
+            return dict(
+                errors2,
+                **{SCHEMA: merge_errors(errors1, errors2.get(SCHEMA))}
+            )
+        return errors1 + [errors2]
+    if isinstance(errors1, dict):
+        if isinstance(errors2, list):
+            return dict(
+                errors1,
+                **{SCHEMA: merge_errors(errors1.get(SCHEMA), errors2)}
+            )
+        if isinstance(errors2, dict):
+            errors = dict(errors1)
+            for key, val in iteritems(errors2):
+                if key in errors:
+                    errors[key] = merge_errors(errors[key], val)
+                else:
+                    errors[key] = val
+            return errors
+        return dict(
+            errors1,
+            **{SCHEMA: merge_errors(errors1.get(SCHEMA), errors2)}
+        )
+    if isinstance(errors2, list):
+        return [errors1] + errors2 if errors1 not in errors2 else errors2
+    if isinstance(errors2, dict):
+        return dict(
+            errors2,
+            **{SCHEMA: merge_errors(errors1, errors2.get(SCHEMA))}
+        )
+    return [errors1, errors2] if errors1 != errors2 else [errors1]
+
 
 class ErrorStore(object):
 
@@ -43,15 +89,19 @@ class ErrorStore(object):
         return self.errors if index is None else self.errors.setdefault(index, {})
 
     def store_error(self, field_name, messages, index=None):
-        self.error_field_names.append(field_name)
         errors = self.get_errors(index=index)
         # Warning: Mutation!
-        if isinstance(messages, dict):
-            errors[field_name] = messages
-        elif isinstance(errors.get(field_name), dict):
-            errors[field_name].setdefault(FIELD, []).extend(messages)
+        if field_name == SCHEMA and isinstance(messages, dict):
+            # A schema-level validation error keyed by field name: store
+            # each message under the field it refers to, so that it is
+            # merged with field-level errors instead of being nested
+            # under the _schema key.
+            for key, val in iteritems(messages):
+                self.error_field_names.append(key)
+                errors[key] = merge_errors(errors.get(key), val)
         else:
-            errors.setdefault(field_name, []).extend(messages)
+            self.error_field_names.append(field_name)
+            errors[field_name] = merge_errors(errors.get(field_name), messages)
 
     def store_validation_error(self, field_names, error, index=None):
         self.error_kwargs.update(error.kwargs)
@@ -183,7 +233,7 @@ class Unmarshaller(ErrorStore):
         """
         if many:
             if not is_collection(data):
-                self.store_error(SCHEMA, ('Invalid input type.', ), index=index)
+                self.store_error(SCHEMA, ['Invalid input type.'], index=index)
                 ret = []
             else:
                 self._pending = True
@@ -201,7 +251,7 @@ class Unmarshaller(ErrorStore):
         ret = dict_class()
         # Check data is a dict
         if not isinstance(data, Mapping):
-            self.store_error(SCHEMA, ('Invalid input type.', ), index=index)
+            self.store_error(SCHEMA, ['Invalid input type.'], index=index)
         else:
             partial_is_collection = is_collection(partial)
             for attr_name, field_obj in iteritems(fields_dict):
@@ -255,7 +305,7 @@ class Unmarshaller(ErrorStore):
                     elif unknown == RAISE:
                         self.store_error(
                             key,
-                            ('Unknown field.',),
+                            ['Unknown field.'],
                             (index if index_errors else None),
                         )
         return ret

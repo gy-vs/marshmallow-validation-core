@@ -570,8 +570,8 @@ class TestValidatesSchemaDecorator:
 
         schema = MySchema(unknown=EXCLUDE)
         errors = schema.validate({'foo': 4, 'baz': 42})
-        assert '_schema' in errors
-        assert errors['_schema'] == {'code': 'invalid_field'}
+        # dict messages are stored under the keys they are keyed by
+        assert errors['code'] == 'invalid_field'
 
         errors = schema.validate({'foo': '4'})
         assert '_schema' in errors
@@ -579,8 +579,7 @@ class TestValidatesSchemaDecorator:
 
         schema = MySchema(unknown=EXCLUDE)
         errors = schema.validate([{'foo': 4, 'baz': 42}], many=True)
-        assert '_schema' in errors
-        assert errors['_schema'] == {'code': 'invalid_field'}
+        assert errors['code'] == 'invalid_field'
 
     def test_allow_arbitrary_field_names_in_error(self):
 
@@ -633,6 +632,86 @@ class TestValidatesSchemaDecorator:
         errors = schema.validate([{'foo': 3, 'bar': 'not an int'}], many=True)
         assert 'bar' in errors[0]
         assert '_schema' not in errors
+
+    def test_dict_messages_are_stored_on_the_fields_they_reference(self):
+
+        class MySchema(Schema):
+            name = fields.Str()
+            age = fields.Int()
+
+            @validates_schema(skip_on_field_errors=False)
+            def validate_name_1(self, data):
+                raise ValidationError({'name': ['error from validator 1']})
+
+            @validates_schema(skip_on_field_errors=False)
+            def validate_name_2(self, data):
+                raise ValidationError({'name': ['error from validator 2']})
+
+            @validates_schema(skip_on_field_errors=False)
+            def validate_other(self, data):
+                raise ValidationError('schema-level error')
+
+        schema = MySchema()
+        # messages from all validators are kept: field-specific messages
+        # land on the field, the rest under _schema
+        errors = schema.validate({'name': 'foo', 'age': 42})
+        assert errors == {
+            'name': ['error from validator 1', 'error from validator 2'],
+            '_schema': ['schema-level error'],
+        }
+
+        # field type errors and schema-level errors share one structure
+        errors = schema.validate({'name': 'foo', 'age': 'notanumber'})
+        assert errors == {
+            'age': ['Not a valid integer.'],
+            'name': ['error from validator 1', 'error from validator 2'],
+            '_schema': ['schema-level error'],
+        }
+
+    def test_dict_messages_merge_with_field_level_errors(self):
+
+        class MySchema(Schema):
+            name = fields.Str()
+
+            @validates('name')
+            def validate_name(self, value):
+                raise ValidationError('field-level error')
+
+            @validates_schema(skip_on_field_errors=False)
+            def validate_schema(self, data):
+                raise ValidationError({'name': ['schema-level error']})
+
+        errors = MySchema().validate({'name': 'foo'})
+        assert errors == {'name': ['field-level error', 'schema-level error']}
+
+    def test_field_name_argument_merges_with_field_level_errors(self):
+
+        class MySchema(Schema):
+            name = fields.Str()
+
+            @validates('name')
+            def validate_name(self, value):
+                raise ValidationError('field-level error')
+
+            @validates_schema(skip_on_field_errors=False)
+            def validate_schema(self, data):
+                # ValidationError(message, field_name) form
+                raise ValidationError('schema-level error', 'name')
+
+        errors = MySchema().validate({'name': 'foo'})
+        assert errors == {'name': ['field-level error', 'schema-level error']}
+
+    def test_dict_messages_are_indexed_when_many(self):
+
+        class MySchema(Schema):
+            name = fields.Str()
+
+            @validates_schema(skip_on_field_errors=False)
+            def validate_schema(self, data):
+                raise ValidationError({'name': ['bad name']})
+
+        errors = MySchema(many=True).validate([{'name': 'a'}, {'name': 'b'}])
+        assert errors == {0: {'name': ['bad name']}, 1: {'name': ['bad name']}}
 
 def test_decorator_error_handling():
     class ExampleSchema(Schema):
